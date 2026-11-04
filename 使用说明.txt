@@ -1,0 +1,97 @@
+﻿影之刃零｜粪便投掷与武器附魔
+2026-11-05 音效版 · Steam Build 26367565
+
+双击安装和卸载
+
+1. 把整个 ZIP 解压到一个文件夹。关闭游戏后双击 Install_Mod.cmd。
+2. 脚本会自动查找 Steam 的游戏目录。找不到时，按提示粘贴游戏的 PBZ 根目录。
+   等窗口显示「安装完成」，再从 Steam 启动游戏。
+3. 想卸载时，先退出游戏，再双击同一文件夹里的 Uninstall_Mod.cmd。
+
+已安装旧版时，可以直接双击新版的 Install_Mod.cmd 升级。卸载音效版请用新版的卸载脚本。
+
+安装器会复用已有的兼容 UE4SS，首次安装时也可以自动装上随包加载器。
+卸载会清理本 Mod 的文件和启用项。仅当加载器由这个安装器添加、文件未改过且
+未发现其他 Mod 时，才一并移除它。被覆盖或移除的文件会先备份，窗口会显示路径，
+一般在 %LOCALAPPDATA%\PBZThrowModInstaller\Backups 下。
+
+按键和默认效果
+
+  F8       施放当前选中的附魔。主武器要出鞘，人物要站定。
+  F8 + 0   切换附魔样式，顺序是粪便（默认）→ 红光 → 蓝光 → 白光。
+           刀上没有附魔时，切换后会尝试播放附魔动作。
+           已有附魔时立即换成下一种，旧效果会清掉，30 秒计时不重置。
+  F9       投掷普通粪球。动作约 1.03 秒时离手。
+  F10      投掷附绳粪便壶。动作约 0.53 秒时离手。
+  F9 + 0   开关普通粪球的出手烟雾。默认关闭。
+  F10 + 0  开关附绳粪便壶的出手烟雾。默认关闭。
+  F7 + 0   开关本 Mod 的中毒掉血。默认开启，关闭时保留中毒外观。
+  Backspace  取消当前动作。已离手的投掷物会继续飞行。
+
+组合键可以按住数字 0，再点按对应的 F 键。出手烟雾开关在下一次投掷时生效。
+两种投掷都有飞行拖尾和落地泥浆。F9 的飞溅尺寸是 F10 的 1.5 倍。
+F9 和 F10 都有离手声与落地或撞墙声。普通粪块以短促的甩手声和湿溅声为主，
+附绳粪便壶以较低的甩声和较重的爆溅声为主。音效用《黑暗之魂 3》的本地素材剪配，
+按实际离手和碰撞时间播放，默认启用。出手烟雾开关不影响音效。
+F9 与 F10 合计每成功扔出五个，触发一次约 8 秒的原生中毒外观。
+开启掉血时会触发游戏原生的一阶段中毒伤害。出手前取消不计数。
+附魔在动作约 0.70 秒时上刀，持续 30 秒。收刀或换武器会提前清除。
+粪便样式是棕色烟雾和泥浆。红、蓝、白是独立的原生光效。
+重新启动游戏会恢复上述默认样式与开关。
+
+手动安装（无法运行脚本时）
+
+1. 完全退出游戏。打开 Steam 游戏库，右键《影之刃零》，选择「属性」→
+   「已安装文件」→「浏览」，找到游戏根目录 PBZ。
+   正确的根目录里能看到 ProjectPBZ 和 platform 两个文件夹。
+
+2. 解压 ZIP。把 Mod 文件夹里面的 ProjectPBZ 和 platform 复制到游戏根目录，
+   合并同名目录。升级时覆盖 PBZThrowTest 的 main.lua 和同名资源包，并复制同目录下
+   的 PBZThrowAudio.dll。音效随 DLL 一起安装，通过 Windows 当前音频输出设备播放。
+   保持每个资源包的 .pak、.utoc 和 .ucas 三件套在同一个 ~mods 目录。
+   如果仍有旧测试包 PBZThrowProps_P.pak、.utoc、.ucas，把这三份旧文件移出游戏目录。
+
+3. 根据你的 UE4SS 安装情况选择一项。
+
+   已有兼容的 UE4SS
+   保留你自己的加载器和设置。此版需要支持 LoopInGameThreadAfterFrames，
+   并启用 EngineTick。随包提供的版本为 UE4SS v3.0.1 Beta，提交 1ceefac8。
+   在 platform\steam\ue4ss\Mods\mods.txt 中加入一行，已有这行就改为 1。
+
+       PBZThrowTest : 1
+
+   如果现有 Mods\mods.json 管理启用状态，在该 JSON 数组中新增下方条目，
+   或把现有的 PBZThrowTest 条目改为启用。保留其他条目，注意条目间的逗号。
+
+       {"mod_name":"PBZThrowTest","mod_enabled":true}
+
+   未安装 UE4SS
+   把 UE4SS_FirstInstall 文件夹里面的 platform 也复制到游戏根目录。
+   其中带有加载器、共享依赖、适配设置及已经启用 PBZThrowTest 的配置。
+   如果目标目录已经有 dwmapi.dll 或 ue4ss 文件夹，先确认其来源并备份，
+   再按「已有兼容的 UE4SS」处理，避免覆盖其他 Mod 的加载环境。
+
+4. 从 Steam 启动游戏并读档。站定试一次 F9。若按键完全没有反应，
+   查看 platform\steam\ue4ss\UE4SS.log 是否有「Frame input fix enabled」。
+   如果有动作却听不到声音，可查看同一日志是否有「Throw audio unavailable」。
+
+手动卸载（无法运行脚本时）
+
+1. 完全退出游戏。在 ProjectPBZ\Content\Paks\~mods 中移走或删除下列六个文件。
+
+       PBZThrowTest_P.pak
+       PBZThrowTest_P.utoc
+       PBZThrowTest_P.ucas
+       PBZThrowPropsSafe_P.pak
+       PBZThrowPropsSafe_P.utoc
+       PBZThrowPropsSafe_P.ucas
+
+2. 移走或删除 platform\steam\ue4ss\Mods\PBZThrowTest 文件夹。
+   在 mods.txt 中移除 PBZThrowTest 那一行，在 mods.json 中移除对应条目。
+   如果你只想暂时停用，把两处的启用值分别改为 0 和 false，再把上面的六个文件移出 ~mods。
+
+3. 如果 UE4SS 是专为这个 Mod 安装且没有其他 Mod 使用它，可以一并移走
+   platform\steam\dwmapi.dll 和 platform\steam\ue4ss。
+   如果还有其他 Mod 使用 UE4SS，保留这两项。
+
+随包提供的 UE4SS 许可证位于 UE4SS_FirstInstall\platform\steam\ue4ss\LICENSE。
