@@ -73,14 +73,24 @@ local poison_phase = "/PBZCombatAsset/Prototypes/GameplayEffects/Inflictions/GE_
 local poison_dot = "/PBZCombatAsset/Prototypes/GameplayEffects/Inflictions/GE_Poison_Dot_Phase1.GE_Poison_Dot_Phase1_C"
 local glow_root = "/PBZVFXPack/VFX/BattleFX/YanQianSui/"
 local enchant_styles = {
-    { name = "dung" },
-    { name = "red", system = "NS_YanQianSui_WeaponBuff_301_Red" },
-    { name = "blue", system = "NS_YanQianSui_WeaponBuff_302_Blue" },
-    { name = "white", system = "NS_YanQianSui_WeaponBuff_303_White" },
+    -- Human Pine Resin (former preset 8), selected by default.
+    { name = "dark_violet_smoke", scale = .20, tint = {
+        sprite_size = { X = 10, Y = 28 },
+        color = { R = .060, G = .018, B = .095, A = .90 },
+        glow = { R = .180, G = .025, B = .300, A = 1 },
+    } },
+    { name = "fire_common", length_param = "User.UE_Length",
+        path = "/PBZVFXPack/VFX/BattleFX/Common/WeaponBurn/NS_Common_WeaponBurn_001.NS_Common_WeaponBurn_001" },
+    { name = "dung", splash = true, scale = .22 },
+    -- Original presets 2-4 are disabled; uncomment to restore them.
+    -- { name = "red", system = "NS_YanQianSui_WeaponBuff_301_Red" },
+    -- { name = "blue", system = "NS_YanQianSui_WeaponBuff_302_Blue" },
+    -- { name = "white", system = "NS_YanQianSui_WeaponBuff_303_White" },
 }
 local brown = { R = .18, G = .055, B = .019, A = .9 }
 local dark_glow = { R = .036, G = .012, B = .003, A = 1 }
 local blade_tint = {
+    sprite_size = { X = 10, Y = 24 },
     color = { R = .30, G = .084, B = .018, A = 1 },
     glow = { R = .32, G = .080, B = .012, A = 1 },
 }
@@ -154,6 +164,7 @@ local throw_pawn, throw_count = nil, 0
 local poison_fx, enchant_fx
 local damage_enabled, poison_damage = true, nil
 local enchant_style = 1
+local enchant_duration = 60
 
 local function same_object(a, b)
     return valid(a) and valid(b) and a:GetAddress() == b:GetAddress()
@@ -198,6 +209,9 @@ local function activate_fx(component, color_param, smoke_glow, tuning)
         end
         if smoke_glow then
             component:SetVariableLinearColor(FName("User.UE_GlowColor"), tuning and tuning.glow or dark_glow)
+            if tuning and tuning.sprite_size then
+                component:SetVariableVec2(FName("User.UE_SpriteSize"), tuning.sprite_size)
+            end
         end
         if tuning and tuning.floats then
             for name, value in pairs(tuning.floats) do component:SetVariableFloat(FName(name), value) end
@@ -375,6 +389,27 @@ local function blade_points(mesh)
     return sockets
 end
 
+local function blade_span(mesh)
+    local asset = mesh:GetSkinnedAsset()
+    if not valid(asset) then return end
+    local bounds = asset:GetBounds()
+    local center, extent = bounds.Origin, bounds.BoxExtent
+    local axis = "X"
+    for _, candidate in ipairs({ "Y", "Z" }) do
+        if extent[candidate] > extent[axis] then axis = candidate end
+    end
+    if extent[axis] <= .01 then return end
+    -- shortcut: rigid mesh bounds approximate the blade; use weapon-specific spans for curved/two-ended blades.
+    local low, high = center[axis] - extent[axis], center[axis] + extent[axis]
+    local offset = { X = 0, Y = 0, Z = 0 }
+    offset[axis] = math.max(low, math.min(0, high))
+    local tip = { X = offset.X, Y = offset.Y, Z = offset.Z }
+    tip[axis] = math.abs(high - offset[axis]) >= math.abs(low - offset[axis]) and high or low
+    local length = math.abs(tip[axis] - offset[axis])
+    if length <= .01 then return end
+    return { offset = offset, tip = tip, length = length, axis = axis }
+end
+
 local function weapon_mesh(actor)
     local mesh_class = StaticFindObject("/Script/Engine.MeshComponent")
     assert(valid(mesh_class), "Mesh component class unavailable")
@@ -398,37 +433,75 @@ local function replace_weapon_effect(state)
     local components = state.components
     for _, mesh in ipairs(state.blades) do
         if valid(mesh) then
-            if style.system then
-                local path = glow_root .. style.system .. "." .. style.system
+            if style.system or style.path then
+                local path = style.path or (glow_root .. style.system .. "." .. style.system)
                 restore("Native weapon glow " .. style.name, function()
-                    components[#components + 1] = attach_fx(path, mesh, FName("None"), zero, 1)
+                    local offset, tuning = zero, nil
+                    if style.length_param then
+                        local fit = blade_span(mesh)
+                        if fit then
+                            -- Center the burn volume on the span, not on the grip.
+                            offset = { X = fit.offset.X, Y = fit.offset.Y, Z = fit.offset.Z }
+                            offset[fit.axis] = (fit.offset[fit.axis] + fit.tip[fit.axis]) * .5
+                            tuning = { floats = { [style.length_param] = fit.length } }
+                            log(string.format("Blade fit %s: length=%.1f axis=%s", style.name, fit.length, fit.axis))
+                            log(string.format("Blade span %s: start=%.1f tip=%.1f", style.name,
+                                fit.offset[fit.axis], fit.tip[fit.axis]))
+                        else
+                            log("Blade fit " .. style.name .. ": no usable blade span; keeping original placement")
+                        end
+                    end
+                    components[#components + 1] = attach_fx(path, mesh, FName("None"), offset, 1, nil, tuning)
                 end)
             else
                 local points = blade_points(mesh)
                 if #points == 0 then points[1] = FName("None") end
-                for _, socket in ipairs(points) do
-                    restore("Brown blade smoke", function()
+                local splash_points, offsets = points, {}
+                local span
+                restore("Smoke span " .. style.name, function() span = blade_span(mesh) end)
+                if span then
+                    points = {}
+                    for i, fraction in ipairs({ .10, .40, .70 }) do
+                        points[i] = FName("None")
+                        offsets[i] = {
+                            X = span.offset.X + (span.tip.X - span.offset.X) * fraction,
+                            Y = span.offset.Y + (span.tip.Y - span.offset.Y) * fraction,
+                            Z = span.offset.Z + (span.tip.Z - span.offset.Z) * fraction,
+                        }
+                    end
+                    log(string.format("Smoke span %s: length=%.1f axis=%s start=%.1f tip=%.1f",
+                        style.name, span.length, span.axis, span.offset[span.axis], span.tip[span.axis]))
+                else
+                    log("Smoke span " .. style.name .. ": no usable bounds; keeping original sockets")
+                end
+                for i, socket in ipairs(points) do
+                    restore("Blade smoke " .. style.name, function()
                         components[#components + 1] =
-                            attach_fx(smoke, mesh, socket, zero, .36, "User.UE_Color", blade_tint)
+                            attach_fx(smoke, mesh, socket, offsets[i] or zero, style.scale or .36, "User.UE_Color", style.tint or blade_tint)
                     end)
                 end
-                restore("Brown blade splash", function()
-                    local middle = points[math.ceil(#points / 2)]
-                    components[#components + 1] =
-                        burst_fx(state.pawn, mud, mesh:GetSocketLocation(middle), .27, "User.UE_MudColor", blade_tint)
-                end)
+                if style.splash then
+                    restore("Brown blade splash", function()
+                        local middle = splash_points[math.ceil(#splash_points / 2)]
+                        components[#components + 1] =
+                            burst_fx(state.pawn, mud, mesh:GetSocketLocation(middle), .27, "User.UE_MudColor", blade_tint)
+                    end)
+                end
             end
         end
     end
-    log(string.format("Weapon enchant style %s (%d active effects)", style.name, #components))
+    log(string.format("Weapon enchant style %s [%d/%d] (%d spawned effects)",
+        style.name, enchant_style, #enchant_styles, #components))
 end
 
 local function cycle_weapon_effect(pawn, now)
     enchant_style = enchant_style % #enchant_styles + 1
-    log("F8+0 selected weapon enchant: " .. enchant_styles[enchant_style].name)
+    log(string.format("F8+0 selected weapon enchant [%d/%d]: %s",
+        enchant_style, #enchant_styles, enchant_styles[enchant_style].name))
     if not enchant_fx or not same_object(pawn, enchant_fx.pawn) or now >= enchant_fx.expires then return false end
     local weapons, _, index = drawn_main_weapon(pawn)
     if same_object(weapons, enchant_fx.weapons) and index == enchant_fx.index then
+        enchant_fx.expires = now + enchant_duration
         replace_weapon_effect(enchant_fx)
         return true
     end
@@ -461,7 +534,7 @@ local function apply_enchant(s, now)
 
     stop_enchant("refreshed")
     local state = { pawn = s.pawn, weapons = weapons, index = index, components = {}, blades = {},
-        expires = now + 30, next_check = now }
+        expires = now + enchant_duration, next_check = now }
     enchant_fx = state
     for _, actor in ipairs(blade_actors) do
         restore("Attach enchant to blade", function()
@@ -476,7 +549,7 @@ local function apply_enchant(s, now)
         log("F8 enchant could not resolve a blade mesh")
     else
         replace_weapon_effect(state)
-        log("Weapon enchant started (30s)")
+        log(string.format("Weapon enchant started (%ds)", enchant_duration))
     end
 end
 
@@ -819,6 +892,7 @@ key(Key.NUM_ZERO, press_zero)
 key(Key.BACKSPACE, function()
     pending_action = nil
     finish("cancelled")
+    stop_enchant("cancelled")
 end)
 
 -- Process inputs, animation and effects on the same game-thread frame.
@@ -855,4 +929,4 @@ local function update_frame()
 end
 
 LoopInGameThreadAfterFrames(1, update_frame)
-log("Frame input fix enabled. Spatial throw audio enabled. F8+0 selects or casts enchant. F9+0 / F10+0 toggle release smoke. F7+0 toggles poison damage.")
+log("Frame input fix enabled. Spatial throw audio enabled. F8+0 selects or casts enchant. F9+0 / F10+0 toggle release smoke. F7+0 toggles poison damage. Weapon enchant: 3 styles, 60s, default dark_violet_smoke; Backspace clears enchant.")

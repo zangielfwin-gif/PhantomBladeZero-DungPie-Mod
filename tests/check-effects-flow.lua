@@ -20,9 +20,10 @@ local tick
 local origin = { X = 0, Y = 0, Z = 80 }
 local rotate = { Pitch = 0, Yaw = 0, Roll = 0 }
 local function effect(asset, parent)
-    local c = object({ asset = asset.path, parent = parent, colors = {} })
+    local c = object({ asset = asset.path, parent = parent, colors = {}, floats = {}, sizes = {} })
     function c:SetVariableLinearColor(name, color) self.colors[name] = color end
-    function c:SetVariableFloat() end
+    function c:SetVariableFloat(name, value) self.floats[name] = value end
+    function c:SetVariableVec2(name, value) self.sizes[name] = value end
     function c:SetWorldScale3D(scale) self.scale = scale end
     function c:Activate() self.active = true; effects[#effects + 1] = self end
     function c:Deactivate() self.active = false end
@@ -32,7 +33,9 @@ end
 local library = object({
     SpawnSystemAttached = function(_, asset, parent, socket, offset, rotation, mode, destroy, active, pool, cull)
         assert(mode == 0 and destroy and not active and pool == 0 and not cull)
-        return effect(asset, parent)
+        local c = effect(asset, parent)
+        c.offset = offset
+        return c
     end,
     SpawnSystemAtLocation = function(_, pawn, asset, pos, rotation, scale, destroy, active, pool, cull)
         assert(destroy and not active and pool == 0 and not cull)
@@ -63,6 +66,11 @@ local blade = object({
     GetFullName = function() return "SkeletalMeshComponentBudgeted Weapon Mesh" end,
     GetSocketLocation = function() return origin end,
     IsA = function() return true end,
+    GetSkinnedAsset = function() return object({
+        GetBounds = function() return {
+            Origin = { X = 0, Y = 0, Z = 45 }, BoxExtent = { X = 3, Y = 2, Z = 55 },
+        } end,
+    }) end,
 })
 local weapon = object({ K2_GetComponentsByClass = function() return { param(blade) } end })
 local weapons = object({
@@ -206,21 +214,27 @@ advance(.88)
 assert(count("Weapon enchant started") == 0)
 advance(.05)
 assert(count("Weapon enchant started") == 1 and #effects == 3)
-assert(effects[1].parent == blade and effects[1].colors["User.UE_Color"].R == .30)
+assert(effects[1].parent == blade and effects[1].colors["User.UE_Color"].R == .060)
+assert(effects[1].scale.X == .20 and effects[1].sizes["User.UE_SpriteSize"].Y == 28)
+assert(effects[1].offset.Z == 10 and effects[2].offset.Z == 40 and effects[3].offset.Z == 70)
+advance(30.1)
+assert(effects[1].active and effects[2].active and effects[3].active)
 chord(8)
 assert(not effects[1].active and not effects[2].active and not effects[3].active)
-assert(effects[4].parent == blade and effects[4].asset:find("_Red", 1, true))
+assert(effects[4].parent == blade and effects[4].asset:find("NS_Common_WeaponBurn_001", 1, true))
+assert(effects[4].floats["User.UE_Length"] == 100 and effects[4].offset.Z == 50)
 chord(8)
-assert(not effects[4].active and effects[5].asset:find("_Blue", 1, true))
+assert(not effects[4].active and effects[5].colors["User.UE_Color"].R == .30)
+assert(effects[5].scale.X == .22 and effects[5].sizes["User.UE_SpriteSize"].Y == 24)
+assert(effects[8].asset:find("NS_Hit_GroundMud_004", 1, true))
 chord(8)
-assert(not effects[5].active and effects[6].asset:find("_White", 1, true))
-chord(8)
-assert(not effects[6].active and effects[7].colors["User.UE_Color"].R == .30)
+for i = 5, 8 do assert(not effects[i].active) end
+assert(effects[9].colors["User.UE_Color"].R == .060)
 assert(count("Playing WeaponEnchant") == 1)
 advance(2.4)
 weapon_index = 1
 advance(.2)
-assert(not effects[7].active and not effects[8].active and not effects[9].active)
+assert(not effects[9].active and not effects[10].active and not effects[11].active)
 keys[8]()
 advance(.4)
 armed = false
@@ -316,8 +330,23 @@ local styled = count("Weapon enchant style")
 advance(.68)
 assert(count("Weapon enchant style") == styled)
 advance(.05)
-assert(count("Weapon enchant style red") == 2)
+assert(count("Weapon enchant style fire_common") == 2)
 advance(2.3)
+
+-- Switching refreshes the full 60 seconds; Backspace also clears the enchant.
+chord(8)
+local first = #effects - 3
+assert(effects[first].colors["User.UE_Color"].R == .30)
+advance(59.99)
+for i = first, first + 3 do assert(effects[i].active) end
+advance(.02)
+for i = first, first + 3 do assert(not effects[i].active) end
+chord(8)
+advance(3.1)
+first = #effects - 2
+assert(effects[first].colors["User.UE_Color"].R == .060)
+keys[1]()
+for i = first, first + 2 do assert(not effects[i].active) end
 
 -- A held key cannot stall the input queue forever.
 held.F10 = true
