@@ -2,6 +2,7 @@ local UE = require("UEHelpers")
 local active
 local flights = {}
 local clips = {
+    PointDown = { path = "/HuaShira/PointDownMod/PD_PointDown_V3.PD_PointDown_V3", seconds = 5 },
     WeaponEnchant = { path = "/Game/ThrowTest/ForwardThrow.ForwardThrow", seconds = 85 / 30, use_time = 21 / 30 },
     DungPie = {
         path = "/Game/ThrowTest/DungPieThrow.DungPieThrow", seconds = 70 / 30, use_time = 31 / 30,
@@ -134,7 +135,7 @@ local function spatial_sound(location)
 end
 
 local function play_throw_sound(f, stage, location)
-    local name = throw_sounds[f.name][stage]
+    local name = throw_sounds[f.spiral and "DungPie" or f.name][stage]
     local ok, played = pcall(function()
         local spatial_ok, pan, gain = pcall(spatial_sound, location)
         if not spatial_ok then pan, gain = 2, 4 end
@@ -162,7 +163,7 @@ end
 local fx_assets = {}
 local throw_pawn, throw_count = nil, 0
 local poison_fx, enchant_fx
-local damage_enabled, poison_damage = true, nil
+local poison_enabled, poison_damage = true, nil
 local enchant_style = 1
 local enchant_duration = 60
 
@@ -259,10 +260,14 @@ local function stop_poison_damage()
     end
 end
 
-local function toggle_poison_damage()
-    damage_enabled = not damage_enabled
-    if not damage_enabled then stop_poison_damage() end
-    log("F7+0 poison damage " .. (damage_enabled and "ON" or "OFF (visual only)"))
+local function toggle_poison()
+    poison_enabled = not poison_enabled
+    throw_count = 0
+    if not poison_enabled then
+        stop_poison_damage()
+        if poison_fx then stop_fx(poison_fx.component); poison_fx = nil end
+    end
+    log("F7 poison " .. (poison_enabled and "ON" or "OFF"))
 end
 
 local function apply_poison_damage(pawn)
@@ -299,6 +304,7 @@ local function apply_poison_damage(pawn)
 end
 
 local function record_throw(s, now)
+    if not poison_enabled then return end
     if not same_object(s.pawn, throw_pawn) then
         throw_pawn, throw_count = s.pawn, 0
     end
@@ -312,9 +318,7 @@ local function record_throw(s, now)
         poison_fx = { pawn = s.pawn, component = component, expires = now + 8 }
         log("Poison visual started after the fifth throw (8s)")
     end)
-    if damage_enabled then
-        restore("Native poison damage", function() apply_poison_damage(s.pawn) end)
-    end
+    restore("Native poison damage", function() apply_poison_damage(s.pawn) end)
 end
 
 local function toggle_release_smoke(name)
@@ -340,7 +344,7 @@ end
 
 local function impact_fx(f, pawn, location)
     restore("Impact effect", function()
-        local scale = f.name == "StalkDungPie" and .40 or .60
+        local scale = f.spiral and .38 or (f.name == "StalkDungPie" and .40 or .60)
         burst_fx(pawn, mud, location, scale, "User.UE_MudColor")
         log(string.format("Impact effect started for %s (mud %.2f)", f.name, scale))
     end)
@@ -510,7 +514,7 @@ end
 
 local function cycle_weapon_effect(pawn, now)
     enchant_style = enchant_style % #enchant_styles + 1
-    log(string.format("F8+0 selected weapon enchant [%d/%d]: %s",
+    log(string.format("F8 selected weapon enchant [%d/%d]: %s",
         enchant_style, #enchant_styles, enchant_styles[enchant_style].name))
     if not enchant_fx or not same_object(pawn, enchant_fx.pawn) or now >= enchant_fx.expires then return false end
     local weapons, _, index = drawn_main_weapon(pawn)
@@ -655,6 +659,47 @@ local function update_held_prop(s, now)
     if position >= s.use_time then release_prop(s, now, position) end
 end
 
+local spiral_times = { .65, 1.17, 1.69, 2.21, 2.73, 3.25, 3.77, 4.29 }
+local spiral_enabled = true
+
+local function spiral_position(spiral, t)
+    local angle = spiral.phase + t * 7.4
+    local radius = 48 + 37 * math.min(t, 2.5)
+    return {
+        X = spiral.center.X + radius * math.cos(angle),
+        Y = spiral.center.Y + radius * math.sin(angle),
+        Z = spiral.center.Z + 92 - t * 18 - t * t * 23,
+    }
+end
+
+local function update_point_down_spiral(s, now)
+    if s.name ~= "PointDown" or not s.spiral_enabled then return end
+    local index = (s.spiral_count or 0) + 1
+    if not spiral_times[index] or s.anim:Montage_GetPosition(s.montage) < spiral_times[index] then return end
+    s.spiral_count = index
+    restore("Point-down spiral", function()
+        local spiral = { center = s.pawn:K2_GetActorLocation(), phase = (index - 1) * 2.4 }
+        local origin = spiral_position(spiral, 0)
+        local asset = load_asset(clips.DungPie.projectile.mesh)
+        local class = StaticFindObject("/Script/Engine.StaticMeshActor")
+        assert(valid(asset) and valid(class), "Spiral prop asset unavailable")
+        local actor = s.pawn:GetWorld():SpawnActor(class, origin, no_rotation)
+        assert(valid(actor), "Could not spawn spiral prop")
+        actor:SetLifeSpan(5.5)
+        local component = actor.StaticMeshComponent
+        assert(valid(component), "Spiral mesh component unavailable")
+        component:SetMobility(2)
+        component:SetCollisionEnabled(0)
+        assert(component:SetStaticMesh(asset), "Could not assign spiral mesh")
+        actor:SetActorScale3D({ X = .23, Y = .23, Z = .23 })
+        flights[#flights + 1] = {
+            actor = actor, pawn = s.pawn, origin = origin, pos = origin, start = now,
+            name = "PointDownSpiral", spiral = spiral, lifetime = 4.6,
+        }
+        log("Point-down spiral prop " .. index)
+    end)
+end
+
 local trace_color = { R = 0, G = 0, B = 0, A = 0 }
 local function update_flight(f, pawn, now)
     if not valid(f.actor) then return true end
@@ -669,7 +714,7 @@ local function update_flight(f, pawn, now)
         log("Flight expired: " .. f.name)
         return true
     end
-    local next_pos = {
+    local next_pos = f.spiral and spiral_position(f.spiral, t) or {
         X = f.origin.X + f.vx * t,
         Y = f.origin.Y + f.vy * t,
         Z = f.origin.Z + f.lift * t - .5 * f.gravity * t * t,
@@ -722,6 +767,9 @@ local function finish(reason)
     local s = active
     if not s then return end
     active = nil
+    if s.point_down_yaw ~= nil and valid(s.pawn) then
+        restore("restore controller yaw", function() s.pawn.bUseControllerRotationYaw = s.point_down_yaw end)
+    end
     if valid(s.held_prop) then
         restore("destroy held prop", function() s.held_prop:K2_DestroyActor() end)
     end
@@ -790,6 +838,7 @@ local function start(name)
     local s = { pawn = pawn, controller = controller, mesh = mesh, move = move,
         mode = move.MovementMode, custom = move.CustomMovementMode,
         name = name, anim = anim, seconds = item.seconds,
+        spiral_enabled = spiral_enabled,
         projectile = item.projectile, use_time = item.use_time,
         weapons = weapons, weapon_index = weapon_index,
         start = UE.GetGameplayStatics():GetTimeSeconds(pawn), next_sample = 1 }
@@ -808,12 +857,40 @@ local function start(name)
     controller:DisableInput(controller)
     s.movement = true
     move:DisableMovement()
+    if name == "PointDown" then
+        s.point_down_yaw = pawn.bUseControllerRotationYaw
+        pawn.bUseControllerRotationYaw = false
+        s.last_turn = s.start
+    end
     -- Keep the original AnimBP active so the montage blends from and back to the live pose.
     local montage = anim:PlaySlotAnimationAsDynamicMontage(clip, FName("FullBody"), .16, .26, 1, 1, -1, 0)
     if not valid(montage) then finish("FullBody slot unavailable"); return end
     s.montage = montage
     if s.projectile then prewarm_throw_audio() end
     log("Playing " .. name .. ": " .. item.path)
+end
+
+local function update_point_down_turn(s, now)
+    if s.name ~= "PointDown" then return end
+    local dt = math.max(0, math.min(now - s.last_turn, .1))
+    s.last_turn = now
+    if dt == 0 then return end
+    local function down(key)
+        return s.controller:IsInputKeyDown({ KeyName = FName(key) }) and 1 or 0
+    end
+    local x, y = down("D") - down("A"), down("W") - down("S")
+    if x == 0 and y == 0 then
+        x = s.controller:GetInputAnalogKeyState({ KeyName = FName("Gamepad_LeftX") })
+        y = s.controller:GetInputAnalogKeyState({ KeyName = FName("Gamepad_LeftY") })
+        if x * x + y * y < .22 ^ 2 then return end
+    end
+    if x == 0 and y == 0 then return end
+    local target = s.controller:GetControlRotation().Yaw + math.deg(math.atan(x, y))
+    local rotation = s.pawn:K2_GetActorRotation()
+    local delta = (target - rotation.Yaw + 180) % 360 - 180
+    local limit = 360 * dt
+    local yaw = rotation.Yaw + math.max(-limit, math.min(limit, delta))
+    s.pawn:K2_SetActorRotation({ Pitch = rotation.Pitch, Yaw = yaw, Roll = rotation.Roll }, false)
 end
 
 local function guarded(label, callback)
@@ -830,10 +907,25 @@ local function key(keycode, callback)
         key_events[#key_events + 1] = callback
     end)
 end
--- Reserve a short window to distinguish an action from its 0 chord.
-local chord_window = .20
-local max_hold_wait = .75
-local pending_action, zero_pawn, zero_at
+local action_menu
+local menu_actions = { "PointDown", "WeaponEnchant", "DungPie", "StalkDungPie" }
+local menu_language = "zh"
+local menu_text = {
+    zh = {
+        title = "动作", actions = { "下指", "附魔", "小零食（前）", "小零食（后）" },
+        dark_violet_smoke = "人松脂", fire_common = "火松脂", dung = "粪便",
+        on = "开", off = "关",
+        help = "方向键 选择  |  Enter 执行  |  O / 退格 关闭  |  O+0 English",
+        settings = "F6 螺旋 %s  |  F7 中毒 %s  |  F8 %s  |  F9/F10 烟雾 %s/%s",
+    },
+    en = {
+        title = "GESTURES", actions = { "Point Down", "Weapon Enchant", "Dung Pie (Forward)", "Dung Pie (Back)" },
+        dark_violet_smoke = "Human Pine Resin", fire_common = "Fire Resin", dung = "Dung",
+        on = "ON", off = "OFF",
+        help = "ARROWS Select  |  ENTER Perform  |  O / BACKSPACE Close  |  O+0 中文",
+        settings = "F6 Spiral %s  |  F7 Poison %s  |  F8 %s  |  F9/F10 %s/%s",
+    },
+}
 
 local function input_context()
     local pawn, controller = UE.GetPlayer(), UE.GetPlayerController()
@@ -843,68 +935,178 @@ local function input_context()
     return pawn, controller, gameplay:GetTimeSeconds(pawn)
 end
 
-local function key_held(controller, name)
-    local ok, down = pcall(function()
-        return controller:IsInputKeyDown({ KeyName = FName(name) })
+local function close_action_menu()
+    local menu = action_menu
+    if not menu then return end
+    action_menu = nil
+    if valid(menu.widget) then restore("Remove gesture menu", function() menu.widget:RemoveFromParent() end) end
+    if valid(menu.controller) then
+        if menu.pawn_locked and valid(menu.pawn) then
+            restore("Restore gesture pawn input", function() menu.pawn:EnableInput(menu.controller) end)
+        end
+        if menu.controller_locked then
+            restore("Restore gesture controller input", function() menu.controller:EnableInput(menu.controller) end)
+        end
+    end
+end
+
+local function select_gesture(index)
+    local menu = action_menu
+    if not menu then return end
+    menu.selected = index
+    for i = 1, #menu_actions do
+        local tile = menu.tiles["Tile" .. i]
+        if valid(tile) then
+            tile:SetBrushColor(i == index and { R = .38, G = .10, B = .065, A = 1 }
+                or { R = .09, G = .08, B = .07, A = .94 })
+        end
+    end
+end
+
+local function refresh_menu_settings()
+    if not action_menu then return end
+    local help = action_menu.tiles.Help
+    if not valid(help) then return end
+    local text = menu_text[menu_language]
+    local function on_off(value) return value and text.on or text.off end
+    help:SetText(FText(text.help .. "\n" .. string.format(text.settings,
+        on_off(spiral_enabled), on_off(poison_enabled),
+        text[enchant_styles[enchant_style].name],
+        on_off(release_smoke.DungPie), on_off(release_smoke.StalkDungPie))))
+end
+
+local function refresh_menu_language()
+    local text = menu_text[menu_language]
+    local tiles = action_menu.tiles
+    if valid(tiles.Title) then tiles.Title:SetText(FText(text.title)) end
+    for i, label in ipairs(text.actions) do
+        local widget = tiles["Action" .. i]
+        if valid(widget) then widget:SetText(FText(label)) end
+    end
+    refresh_menu_settings()
+end
+
+local function toggle_action_menu()
+    if action_menu then close_action_menu(); return end
+    local pawn, controller = input_context()
+    if not pawn or active or controller:IsMoveInputIgnored() or not valid(pawn.CharacterMovement)
+        or not pawn.CharacterMovement:IsMovingOnGround() then return end
+    local ok, err = pcall(function()
+        local library = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+        local class = load_asset("/Game/PBZActionMenu/WBP_ActionMenu.WBP_ActionMenu_C")
+        assert(valid(library) and valid(class), "Gesture menu asset unavailable")
+        local widget = library:Create(pawn, class, controller)
+        assert(valid(widget), "Gesture menu creation failed")
+        local menu = { pawn = pawn, controller = controller, widget = widget, tiles = {} }
+        action_menu = menu
+        widget:SetVisibility(3)
+        widget:AddToViewport(100)
+        local root = widget.WidgetTree.RootWidget
+        for i = 0, root:GetChildrenCount() - 1 do
+            local child = root:GetChildAt(i)
+            if valid(child) then menu.tiles[child:GetFName():ToString()] = child end
+        end
+        for i = 1, #menu_actions do assert(valid(menu.tiles["Tile" .. i]), "Gesture tile missing") end
+        restore("Native menu title texture", function()
+            if not valid(menu.tiles.TitleStrip) then return end
+            local texture = load_asset("/Game/PBZContent/UI/Texture/PauseMenu/T_Title_BG.T_Title_BG")
+            if valid(texture) then menu.tiles.TitleStrip:SetBrushFromTexture(texture) end
+        end)
+        select_gesture(1)
+        restore("Native menu font", function()
+            local font = load_asset("/Game/PBZContent/UI/Fonts/ZH_FZKaiTi_Font.ZH_FZKaiTi_Font")
+            if not valid(font) then return end
+            for _, name in ipairs({ "Title", "Help", "Action1", "Action2", "Action3", "Action4" }) do
+                local label = menu.tiles[name]
+                if valid(label) then
+                    local info = label.Font
+                    info.FontObject = font
+                    label:SetFont(info)
+                end
+            end
+        end)
+        restore("Gesture menu language", refresh_menu_language)
+        pawn:DisableInput(controller)
+        menu.pawn_locked = true
+        controller:DisableInput(controller)
+        menu.controller_locked = true
     end)
-    return ok and down == true
-end
-
-local function run_chord(action, pawn, now)
-    pending_action, zero_at = nil, nil
-    if action == "WeaponEnchant" then
-        if not cycle_weapon_effect(pawn, now) then start("WeaponEnchant") end
-    elseif action == "PoisonDamage" then
-        toggle_poison_damage()
-    else
-        toggle_release_smoke(action)
+    if not ok then
+        close_action_menu()
+        log("Gesture menu unavailable: " .. tostring(err))
     end
 end
 
-local function queue_action(action, input_key)
-    local pawn, controller, now = input_context()
-    if not pawn then log(input_key .. " ignored outside active play"); return end
-    local recent_zero = same_object(pawn, zero_pawn) and zero_at and now >= zero_at and now - zero_at <= chord_window
-    if recent_zero or key_held(controller, "Zero") or key_held(controller, "NumPadZero") then
-        run_chord(action, pawn, now)
-    else
-        pending_action = { action = action, key = input_key, pawn = pawn, ready = now + chord_window,
-            latest = now + max_hold_wait }
-        log(input_key .. " queued: " .. action)
-    end
+local function move_gesture_selection(horizontal)
+    if not action_menu then return end
+    local current = action_menu.selected - 1
+    local row, column = current // 2, current % 2
+    select_gesture(horizontal and (row * 2 + (1 - column) + 1) or ((1 - row) * 2 + column + 1))
 end
 
-local function press_zero()
+local function setting_key(code, change)
+    key(code, function()
+        local pawn, _, now = input_context()
+        if not pawn then return end
+        change(pawn, now)
+        restore("Gesture menu settings", refresh_menu_settings)
+    end)
+end
+
+setting_key(Key.F6, function()
+    spiral_enabled = not spiral_enabled
+    log("F6 point-down spiral " .. (spiral_enabled and "ON" or "OFF"))
+end)
+setting_key(Key.F7, toggle_poison)
+setting_key(Key.F8, cycle_weapon_effect)
+setting_key(Key.F9, function() toggle_release_smoke("DungPie") end)
+setting_key(Key.F10, function() toggle_release_smoke("StalkDungPie") end)
+local menu_o_press, menu_zero_press
+local function recent_menu_key(entry, pawn, now)
+    return entry and same_object(entry.pawn, pawn) and now >= entry.time and now - entry.time <= .25
+end
+
+local function toggle_menu_language()
+    menu_o_press, menu_zero_press = nil, nil
+    menu_language = menu_language == "zh" and "en" or "zh"
+    if action_menu then refresh_menu_language() else toggle_action_menu() end
+end
+
+key(Key.O, function()
     local pawn, controller, now = input_context()
     if not pawn then return end
-    local pending = pending_action
-    if pending and same_object(pawn, pending.pawn) and (now <= pending.ready or key_held(controller, pending.key)) then
-        run_chord(pending.action, pawn, now)
+    if recent_menu_key(menu_zero_press, pawn, now)
+        or controller:IsInputKeyDown({ KeyName = FName("Zero") })
+        or controller:IsInputKeyDown({ KeyName = FName("NumPadZero") }) then
+        toggle_menu_language()
     else
-        zero_pawn, zero_at = pawn, now
+        menu_o_press = { pawn = pawn, time = now }
+        toggle_action_menu()
+    end
+end)
+local function press_menu_zero()
+    local pawn, _, now = input_context()
+    if not pawn then return end
+    if recent_menu_key(menu_o_press, pawn, now) then
+        toggle_menu_language()
+    else
+        menu_zero_press = { pawn = pawn, time = now }
     end
 end
-
-local function update_pending_action(pawn, now)
-    local pending = pending_action
-    if not pending then return end
-    local controller = UE.GetPlayerController()
-    if not same_object(pawn, pending.pawn) or not valid(controller) or UE.GetGameplayStatics():IsGamePaused(pawn) then
-        pending_action = nil
-    elseif now >= pending.ready and (now >= pending.latest or not key_held(controller, pending.key)) then
-        pending_action = nil
-        if pending.action ~= "PoisonDamage" then start(pending.action) end
-    end
-end
-
-key(Key.F7, function() queue_action("PoisonDamage", "F7") end)
-key(Key.F8, function() queue_action("WeaponEnchant", "F8") end)
-key(Key.F9, function() queue_action("DungPie", "F9") end)
-key(Key.F10, function() queue_action("StalkDungPie", "F10") end)
-key(Key.ZERO, press_zero)
-key(Key.NUM_ZERO, press_zero)
+key(Key.ZERO, press_menu_zero)
+key(Key.NUM_ZERO, press_menu_zero)
+key(Key.LEFT_ARROW, function() move_gesture_selection(true) end)
+key(Key.RIGHT_ARROW, function() move_gesture_selection(true) end)
+key(Key.UP_ARROW, function() move_gesture_selection(false) end)
+key(Key.DOWN_ARROW, function() move_gesture_selection(false) end)
+key(Key.RETURN, function()
+    if not action_menu then return end
+    local chosen = menu_actions[action_menu.selected]
+    close_action_menu()
+    start(chosen)
+end)
 key(Key.BACKSPACE, function()
-    pending_action = nil
+    if action_menu then close_action_menu(); return end
     finish("cancelled")
     stop_enchant("cancelled")
 end)
@@ -916,21 +1118,27 @@ local function update_frame()
         key_events = {}
         for _, callback in ipairs(events) do guarded("Input error", callback) end
     end
-    if not pending_action and not active and #flights == 0 and not poison_fx and not enchant_fx then return end
+    if not action_menu and not active and #flights == 0 and not poison_fx and not enchant_fx then return end
     guarded("Frame update error", function()
         local pawn = UE.GetPlayer()
+        if action_menu and (not same_object(pawn, action_menu.pawn)
+            or not same_object(UE.GetPlayerController(), action_menu.controller)
+            or UE.GetGameplayStatics():IsGamePaused(pawn)) then
+            close_action_menu()
+        end
         local now = valid(pawn) and UE.GetGameplayStatics():GetTimeSeconds(pawn) or 0
         if #flights > 0 then update_flights(pawn, now) end
         update_status_fx(pawn, now)
-        update_pending_action(pawn, now)
         local s = active
         if not s then return end
-        if not same_object(pawn, s.pawn) or not valid(s.mesh) or not valid(s.move) or s.move.MovementMode ~= 0
+        if not same_object(pawn, s.pawn) or not valid(s.controller) or not valid(s.mesh) or not valid(s.move) or s.move.MovementMode ~= 0
             or UE.GetGameplayStatics():IsGamePaused(pawn) then
             finish("interrupted")
             return
         end
         update_held_prop(s, now)
+        update_point_down_turn(s, now)
+        update_point_down_spiral(s, now)
         update_enchant(s, now)
         local elapsed = now - s.start
         local target = s.times[s.next_sample]
@@ -943,4 +1151,4 @@ local function update_frame()
 end
 
 LoopInGameThreadAfterFrames(1, update_frame)
-log("Frame input fix enabled. Spatial throw audio enabled. F8+0 selects or casts enchant. F9+0 / F10+0 toggle release smoke. F7+0 toggles poison damage. Weapon enchant: 3 styles, 60s, default dark_violet_smoke; Backspace clears enchant.")
+log("Frame input fix enabled. O opens gestures; F8 selects enchant; F9/F10 toggle release smoke; F7 toggles poison.")

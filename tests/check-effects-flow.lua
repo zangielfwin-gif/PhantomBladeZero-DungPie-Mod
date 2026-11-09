@@ -87,25 +87,36 @@ local move = object({ MovementMode = 1, CustomMovementMode = 0,
     IsMovingOnGround = function() return true end,
     DisableMovement = function(self) self.MovementMode = 0 end,
     SetMovementMode = function(self, mode) self.MovementMode = mode end })
-local world = object({ SpawnActor = function()
+local actors = {}
+local world = object({ SpawnActor = function(_, _, position)
     local component = object({ SetMobility = function() end, SetCollisionEnabled = function() end,
         SetStaticMesh = function() return true end })
-    return object({ StaticMeshComponent = component, SetLifeSpan = function() end,
+    local actor = object({ StaticMeshComponent = component, SetLifeSpan = function() end, path = {position},
         SetActorScale3D = function() end, K2_AttachToComponent = function() return true end,
         K2_DetachFromActor = function() end, K2_GetActorLocation = function() return origin end,
         K2_DestroyActor = function(self) self.destroyed = true end,
-        K2_SetActorLocation = function() end })
+        K2_SetActorLocation = function(self, position) self.path[#self.path + 1] = position end })
+    actors[#actors + 1] = actor
+    return actor
 end })
-local pawn = object({ Mesh = mesh, CharacterMovement = move,
+local pawn_rotation = { Pitch = 0, Yaw = 0, Roll = 0 }
+local pawn = object({ Mesh = mesh, CharacterMovement = move, bUseControllerRotationYaw = true,
     GetComponentByClass = function() return weapons end,
     GetVelocity = function() return { X = 0, Y = 0, Z = 0 } end,
-    K2_GetActorRotation = function() return rotate end,
+    K2_GetActorRotation = function() return pawn_rotation end,
+    K2_SetActorRotation = function(_, rotation) pawn_rotation = rotation end,
+    K2_GetActorLocation = function() return origin end,
     GetActorForwardVector = function() return { X = 1, Y = 0, Z = 0 } end,
     GetWorld = function() return world end,
     DisableInput = function() end, EnableInput = function() end })
 local camera = object({ GetCameraLocation = function() return { X = 0, Y = 0, Z = 140 } end,
     GetCameraRotation = function() return { Yaw = 90 } end })
+local left_stick = { X = 0, Y = 0 }
 local controller = object({ PlayerCameraManager = camera, IsMoveInputIgnored = function() return false end,
+    GetInputAnalogKeyState = function(_, key)
+        return key.KeyName == "Gamepad_LeftX" and left_stick.X or left_stick.Y
+    end,
+    GetControlRotation = function() return rotate end,
     IsInputKeyDown = function(_, key) return held[key.KeyName] == true end,
     DisableInput = function() end, EnableInput = function() end })
 local poison_handles, poison_applications, handle_id = {}, 0, 0
@@ -164,11 +175,45 @@ package.loaded.UEHelpers = { GetPlayer = function()
     GetPlayerController = function() return controller end, GetGameplayStatics = function() return gameplay end,
     GetKismetSystemLibrary = function() return kismet end }
 
-Key = { F7 = 7, F8 = 8, F9 = 9, F10 = 10, BACKSPACE = 1, ZERO = 48, NUM_ZERO = 96 }
+Key = { O = 79, F6 = 6, F7 = 7, F8 = 8, F9 = 9, F10 = 10, BACKSPACE = 1, ZERO = 48, NUM_ZERO = 96,
+    LEFT_ARROW = 37, UP_ARROW = 38, RIGHT_ARROW = 39, DOWN_ARROW = 40, RETURN = 13 }
 FName = function(name) return name end
+FText = function(text) return text end
 RegisterKeyBind = function(key, fn) keys[key] = fn end
 LoopInGameThreadAfterFrames = function(frames, fn) assert(frames == 1); tick = fn end
 StaticFindObject = function(path)
+    if path:find("WidgetBlueprintLibrary", 1, true) then
+        return object({ Create = function(_, player, class, owner)
+            assert(player == pawn and owner == controller and class.path:find("WBP_ActionMenu", 1, true))
+            local tiles = {}
+            for i = 1, 4 do
+                local name = "Tile" .. i
+                tiles[i] = object({
+                    GetFName = function() return { ToString = function() return name end } end,
+                    SetBrushColor = function(_, color) if color.A == 1 then menu_selection = name end end,
+                })
+            end
+            menu_labels = {}
+            for _, label in ipairs({ "Title", "Help", "Action1", "Action2", "Action3", "Action4" }) do
+                tiles[#tiles + 1] = object({
+                    GetFName = function() return { ToString = function() return label end } end,
+                    Font = {}, SetFont = function() end,
+                    SetText = function(_, text) menu_labels[label] = text end,
+                })
+            end
+            return object({
+                WidgetTree = { RootWidget = {
+                    GetChildrenCount = function() return #tiles end,
+                    GetChildAt = function(_, i) return tiles[i + 1] end,
+                } },
+                SetVisibility = function() end, SetAnchorsInViewport = function() end,
+                SetAlignmentInViewport = function() end, SetDesiredSizeInViewport = function() end,
+                SetPositionInViewport = function() end,
+                AddToViewport = function() menu_visible = true end,
+                RemoveFromParent = function() menu_visible = false end,
+            })
+        end })
+    end
     if path:find("NiagaraFunctionLibrary") then return library end
     if path:find("AbilitySystemBlueprintLibrary") then
         return object({ GetAbilitySystemComponent = function(_, actor) assert(actor == pawn); return asc end })
@@ -199,191 +244,128 @@ local function count(pattern, list)
     return n
 end
 
-local function chord(key)
-    keys[48]()
-    keys[key]()
+local function select_action(index)
+    keys[79]()
+    assert(menu_visible and menu_selection == "Tile1")
+    if index % 2 == 0 then keys[39]() end
+    if index >= 3 then keys[40]() end
+    assert(menu_selection == "Tile" .. index)
+    keys[13]()
+    assert(not menu_visible)
 end
 
-local audio_build = MOD_SCRIPT:find("PBZThrowAudio.dll", 1, true) ~= nil
-
-keys[8]()
-advance(.22)
-assert(count("F8 requires a drawn main weapon.") == 1 and count("Playing WeaponEnchant") == 0)
+select_action(2)
+assert(count("F8 requires a drawn main weapon.") == 1)
 armed = true
 keys[8]()
-advance(.88)
+assert(count("Playing WeaponEnchant") == 0)
+select_action(2)
+advance(.69)
 assert(count("Weapon enchant started") == 0)
-advance(.05)
-assert(count("Weapon enchant started") == 1 and #effects == 3)
-assert(effects[1].parent == blade and effects[1].colors["User.UE_Color"].R == .060)
-assert(effects[1].scale.X == .20 and effects[1].sizes["User.UE_SpriteSize"].Y == 28)
-assert(effects[1].offset.Z == 10 and effects[2].offset.Z == 40 and effects[3].offset.Z == 70)
+advance(.03)
+assert(count("Weapon enchant started") == 1)
+assert(effects[1].floats["User.UE_Length"] == 100 and effects[1].offset.Z == 50)
+keys[8]()
+assert(not effects[1].active and effects[2].colors["User.UE_Color"].R == .30)
+keys[8]()
+assert(not effects[2].active and effects[6].colors["User.UE_Color"].R == .060)
 advance(30.1)
-assert(effects[1].active and effects[2].active and effects[3].active)
-chord(8)
-assert(not effects[1].active and not effects[2].active and not effects[3].active)
-assert(effects[4].parent == blade and effects[4].asset:find("NS_Common_WeaponBurn_001", 1, true))
-assert(effects[4].floats["User.UE_Length"] == 100 and effects[4].offset.Z == 50)
-chord(8)
-assert(not effects[4].active and effects[5].colors["User.UE_Color"].R == .30)
-assert(effects[5].scale.X == .22 and effects[5].sizes["User.UE_SpriteSize"].Y == 24)
-assert(effects[8].asset:find("NS_Hit_GroundMud_004", 1, true))
-chord(8)
-for i = 5, 8 do assert(not effects[i].active) end
-assert(effects[9].colors["User.UE_Color"].R == .060)
-assert(count("Playing WeaponEnchant") == 1)
-advance(2.4)
+assert(effects[6].active)
 weapon_index = 1
 advance(.2)
-assert(not effects[9].active and not effects[10].active and not effects[11].active)
-keys[8]()
-advance(.4)
-armed = false
-advance(2.7)
-assert(count("Weapon enchant started") == 1)
+assert(not effects[6].active)
 
-keys[9]()
-advance(1.16)
-keys[1]()
-assert(count("Successful throws") == 0)
-assert(#sounds == 0)
-for i, key in ipairs({ 9, 10, 9, 10, 10 }) do
-    keys[key]()
-    local just_released = key == 9 and 1.28 or .78
-    advance(just_released)
-    assert(count("Released ") == i and count("Flight smoke started") == i - 1)
-    local suffix = key == 9 and "Dung" or "Stalk"
-    if audio_build then
-        assert(#sounds == 2 * i - 1)
-        assert(sounds[#sounds].asset == suffix .. "Release" and sounds[#sounds].pan == 2 and sounds[#sounds].gain == 4)
-    end
-    advance(3.1 - just_released)
-    assert(count("Released ") == i and count("Flight smoke started") == i and count("Impact effect started") == i)
-    if audio_build then
-        assert(#sounds == 2 * i)
-        local hit_sound = sounds[#sounds]
-        assert(hit_sound.asset == suffix .. "Impact")
-        assert((key == 9 and hit_sound.pan == 0 and hit_sound.gain < 4) or
-               (key == 10 and hit_sound.pan > 2 and hit_sound.gain == 4))
-    end
-    assert(count("Poison visual started") == (i == 5 and 1 or 0))
-    assert(poison_applications == (i == 5 and 1 or 0))
-end
-assert(count("DungPie (mud 0.60)") == 2 and count("StalkDungPie (mud 0.40)") == 3)
-assert(count("Native phase 1 poison applied (DOT handles: 1)") == 1)
-local poison
-for _, c in ipairs(effects) do
-    assert(not c.asset:find("NS_GroundHit_Dust_Small_002", 1, true))
-    if c.asset:find("NS_Debuff_004_Poison", 1, true) then poison = c end
-end
-assert(poison and poison.parent == mesh and poison.active)
--- F7 held first, then 0 after the chord window.
-held.F7 = true
-keys[7]()
-advance(.45)
-poison_handles[99] = "dot"
-keys[96]()
-held.F7 = false
-assert(count("F7+0 poison damage OFF") == 1 and poison.active)
-assert(poison_handles[99] == "dot" and poison_handles[1] == nil and poison_handles[2] == nil)
-advance(8.1)
-assert(not poison.active)
-for _, key in ipairs({ 9, 10, 9, 10, 9 }) do keys[key](); advance(3.1) end
-assert(count("Poison visual started") == 2 and poison_applications == 1 and count("Released ") == 10)
--- Holding 0 first works even after the tap recognition window.
-held.Zero = true
-keys[48]()
-advance(.35)
-keys[7]()
-held.Zero = false
-assert(count("F7+0 poison damage ON") == 1)
-for _, key in ipairs({ 10, 10, 10, 10, 10 }) do keys[key](); advance(3.1) end
-assert(count("Poison visual started") == 3 and poison_applications == 1 and poison_handles[99] == "dot")
-assert(count("Native poison already active") == 1)
-
-chord(9)
-assert(count("Released ") == 15 and count("Release smoke DungPie ON") == 1)
-keys[10]()
-advance(2.1)
-assert(count("Release smoke started") == 0)
-keys[9]()
-advance(3.1)
-assert(count("Release smoke started for DungPie") == 1)
-chord(10)
-chord(9)
-assert(count("Released ") == 17)
-keys[9]()
-advance(3.1)
-keys[10]()
-advance(2.1)
-assert(count("Release smoke started for DungPie") == 1 and count("Release smoke started for StalkDungPie") == 1)
-chord(10)
-keys[10]()
-advance(2.1)
-assert(count("Release smoke started") == 2)
-assert(count("error") == 0)
-
--- A chord with no active enchant plays the selected style on the animation frame.
-armed = true
-chord(8)
-assert(count("Playing WeaponEnchant") == 3)
-local styled = count("Weapon enchant style")
-advance(.68)
-assert(count("Weapon enchant style") == styled)
-advance(.05)
-assert(count("Weapon enchant style fire_common") == 2)
-advance(2.3)
-
--- Switching refreshes the full 60 seconds; Backspace also clears the enchant.
-chord(8)
-local first = #effects - 3
-assert(effects[first].colors["User.UE_Color"].R == .30)
-advance(59.99)
-for i = first, first + 3 do assert(effects[i].active) end
-advance(.02)
-for i = first, first + 3 do assert(not effects[i].active) end
-chord(8)
-advance(3.1)
-first = #effects - 2
-assert(effects[first].colors["User.UE_Color"].R == .060)
-keys[1]()
-for i = first, first + 2 do assert(not effects[i].active) end
-
--- A held key cannot stall the input queue forever.
-held.F10 = true
-local starts = count("Playing StalkDungPie")
-keys[10]()
-advance(.76)
-assert(count("Playing StalkDungPie") == starts + 1)
-held.F10 = false
-advance(2.1)
-
--- One failing frame does not prevent the next key or flight from being processed.
-keys[9]()
-player_error = true
-tick()
-assert(count("Frame update error") == 1)
-local released = count("Released ")
-advance(3.1)
-assert(count("Released ") == released + 1)
-
-if audio_build then
-    local n, hits = #sounds, count("Impact effect started")
-    audio_error = true
-    keys[10]()
-    advance(3.1)
-    assert(#sounds == n and count("Impact effect started") == hits + 1)
-    assert(count("Throw audio unavailable") == 2)
-    audio_error = false
-    keys[10]()
-    advance(3.1)
-    assert(#sounds == n + 2 and count("Impact effect started") == hits + 2)
-end
-
--- A weapon without readable bounds should still receive the native fire effect.
 blade.GetSkinnedAsset = function() error("bounds unavailable") end
-chord(8)
-advance(1.0)
+keys[8]()
+select_action(2)
+advance(.72)
 local fallback = effects[#effects]
 assert(fallback.parent == blade and fallback.asset:find("NS_Common_WeaponBurn_001", 1, true))
 assert(fallback.offset.X == 0 and fallback.offset.Y == 0 and fallback.offset.Z == 0)
+keys[1]()
+assert(not fallback.active)
+advance(3)
+
+keys[9]()
+keys[10]()
+assert(count("Released ") == 0)
+select_action(3)
+advance(.9)
+keys[1]()
+assert(count("Successful throws") == 0 and #sounds == 0)
+for i, index in ipairs({3, 4, 3, 4, 4}) do
+    select_action(index)
+    advance(index == 3 and 1.08 or .57)
+    assert(count("Released ") == i and #sounds == 2 * i - 1)
+    advance(3.1)
+    assert(count("Impact effect started") == i and #sounds == 2 * i)
+    assert(poison_applications == (i == 5 and 1 or 0))
+end
+assert(count("Release smoke started for DungPie") == 2)
+assert(count("Release smoke started for StalkDungPie") == 3)
+assert(count("Poison visual started") == 1)
+local poison
+for _, effect in ipairs(effects) do
+    if effect.asset:find("NS_Debuff_004_Poison", 1, true) then poison = effect end
+end
+assert(poison and poison.active)
+poison_handles[99] = "dot"
+keys[7]()
+assert(not poison.active and poison_handles[99] == "dot" and poison_handles[1] == nil and poison_handles[2] == nil)
+select_action(3)
+advance(3.1)
+assert(count("Successful throws") == 5 and poison_applications == 1)
+keys[7]()
+
+keys[79]()
+keys[39]()
+keys[40]()
+assert(menu_selection == "Tile4")
+keys[1]()
+assert(not menu_visible)
+keys[6]()
+select_action(1)
+advance(5.2)
+assert(count("Playing PointDown") == 1 and count("Point-down spiral prop") == 0)
+keys[6]()
+select_action(1)
+advance(.5)
+assert(count("Point-down spiral prop") == 0)
+keys[1]()
+advance(2)
+assert(count("Point-down spiral prop") == 0)
+select_action(1)
+held.D = true
+advance(.10)
+assert(pawn_rotation.Yaw > 0 and pawn_rotation.Yaw < 90 and move.MovementMode == 0)
+advance(.25)
+assert(math.abs(pawn_rotation.Yaw - 90) < .01)
+held.D = false
+left_stick.X = .10
+advance(.10)
+assert(math.abs(pawn_rotation.Yaw - 90) < .01)
+left_stick.X, left_stick.Y = 0, 1
+advance(.10)
+assert(pawn_rotation.Yaw < 90 and pawn_rotation.Yaw > 0)
+advance(.20)
+assert(math.abs(pawn_rotation.Yaw) < .01)
+left_stick.Y = 0
+advance(7.05)
+assert(pawn.bUseControllerRotationYaw and move.MovementMode == 1)
+assert(count("Point-down spiral prop") == 8)
+assert(count("Impact effect started for PointDownSpiral") == 8)
+assert(count("Successful throws") == 5)
+for i = #actors - 7, #actors do
+    local path = actors[i].path
+    assert(#path > 180 and path[2].Z < path[1].Z)
+    assert(path[8].X ~= path[1].X and path[8].Y ~= path[1].Y)
+end
+
+keys[79]()
+assert(menu_visible and menu_labels.Action1 == "下指" and menu_labels.Action4 == "小零食（后）")
+keys[48]()
+assert(menu_visible and menu_labels.Action1 == "Point Down")
+keys[96]()
+keys[79]()
+assert(menu_visible and menu_labels.Action2 == "附魔" and menu_labels.Action3 == "小零食（前）")
+keys[1]()

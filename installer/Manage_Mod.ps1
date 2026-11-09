@@ -19,7 +19,8 @@ $modsJson = "$mods\mods.json"
 $modFiles = @("$mods\PBZThrowTest\Scripts\main.lua", "$mods\PBZThrowTest\Scripts\PBZThrowAudio.dll")
 $oldFiles = @()
 foreach ($ext in 'pak', 'ucas', 'utoc') {
-    $modFiles += "$paks\PBZThrowTest_P.$ext", "$paks\PBZThrowPropsSafe_P.$ext"
+    $modFiles += "$paks\PBZThrowTest_P.$ext", "$paks\PBZThrowPropsSafe_P.$ext",
+        "$paks\PointDownNative_LocalTest_P.$ext", "$paks\PBZActionMenu_P.$ext"
     $oldFiles += "$paks\PBZThrowProps_P.$ext"
 }
 $loaderFiles = @(
@@ -135,7 +136,8 @@ function Read-ModList([string]$Path) {
     if (-not $content.StartsWith('[') -or -not $content.EndsWith(']')) {
         throw "现有 mods.json 不是有效的列表，脚本不会覆盖它：$Path"
     }
-    foreach ($entry in @(ConvertFrom-Json -InputObject $content)) {
+    $entries = ConvertFrom-Json -InputObject $content
+    foreach ($entry in $entries) {
         if ($null -eq $entry) { continue }
         if ($entry -isnot [pscustomobject] -or -not $entry.mod_name) {
             throw "现有 mods.json 包含无法识别的条目：$Path"
@@ -267,6 +269,9 @@ try {
     $gameRoot = Select-PBZ
     Write-Host "游戏目录：$gameRoot"
     if ($Action -eq 'Install') {
+        if (Test-Path -LiteralPath (Game-File "$mods\PointDown\Scripts\main.lua") -PathType Leaf) {
+            throw '检测到独立下指 Mod。请先卸载独立版，再安装动作菜单整合版。'
+        }
         $dll = Game-File "$loader\UE4SS.dll"
         if (Test-Path -LiteralPath $dll -PathType Leaf) {
             $image = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll))
