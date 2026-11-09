@@ -390,7 +390,12 @@ local function blade_points(mesh)
 end
 
 local function blade_span(mesh)
-    local asset = mesh:GetSkinnedAsset()
+    local asset
+    if mesh:IsA("/Script/Engine.StaticMeshComponent") then
+        asset = mesh.StaticMesh
+    else
+        asset = mesh:GetSkinnedAsset()
+    end
     if not valid(asset) then return end
     local bounds = asset:GetBounds()
     local center, extent = bounds.Origin, bounds.BoxExtent
@@ -408,6 +413,15 @@ local function blade_span(mesh)
     local length = math.abs(tip[axis] - offset[axis])
     if length <= .01 then return end
     return { offset = offset, tip = tip, length = length, axis = axis }
+end
+
+local function blade_splash_location(mesh, points)
+    if #points == 2 then
+        local start = mesh:GetSocketLocation(points[1])
+        local tip = mesh:GetSocketLocation(points[2])
+        return { X = (start.X + tip.X) * .5, Y = (start.Y + tip.Y) * .5, Z = (start.Z + tip.Z) * .5 }
+    end
+    return mesh:GetSocketLocation(points[math.ceil(#points / 2)])
 end
 
 local function weapon_mesh(actor)
@@ -438,7 +452,8 @@ local function replace_weapon_effect(state)
                 restore("Native weapon glow " .. style.name, function()
                     local offset, tuning = zero, nil
                     if style.length_param then
-                        local fit = blade_span(mesh)
+                        local fit
+                        restore("Fire span " .. style.name, function() fit = blade_span(mesh) end)
                         if fit then
                             -- Center the burn volume on the span, not on the grip.
                             offset = { X = fit.offset.X, Y = fit.offset.Y, Z = fit.offset.Z }
@@ -482,9 +497,8 @@ local function replace_weapon_effect(state)
                 end
                 if style.splash then
                     restore("Brown blade splash", function()
-                        local middle = splash_points[math.ceil(#splash_points / 2)]
                         components[#components + 1] =
-                            burst_fx(state.pawn, mud, mesh:GetSocketLocation(middle), .27, "User.UE_MudColor", blade_tint)
+                            burst_fx(state.pawn, mud, blade_splash_location(mesh, splash_points), .27, "User.UE_MudColor", blade_tint)
                     end)
                 end
             end

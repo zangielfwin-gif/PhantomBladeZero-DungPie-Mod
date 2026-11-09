@@ -65,7 +65,7 @@ local blade = object({
     IsVisible = function() return false end,
     GetFullName = function() return "SkeletalMeshComponentBudgeted Weapon Mesh" end,
     GetSocketLocation = function() return origin end,
-    IsA = function() return true end,
+    IsA = function(_, class) return class ~= "/Script/Engine.StaticMeshComponent" end,
     GetSkinnedAsset = function() return object({
         GetBounds = function() return {
             Origin = { X = 0, Y = 0, Z = 45 }, BoxExtent = { X = 3, Y = 2, Z = 55 },
@@ -155,6 +155,7 @@ package.loadlib = function(path, symbol)
         sounds[#sounds + 1] = { asset = cue, pan = tonumber(pan), gain = tonumber(gain) }
     end
 end
+
 local player_error = false
 package.loaded.UEHelpers = { GetPlayer = function()
         if player_error then player_error = false; error("injected player lookup failure") end
@@ -378,3 +379,11 @@ if audio_build then
     advance(3.1)
     assert(#sounds == n + 2 and count("Impact effect started") == hits + 2)
 end
+
+-- A weapon without readable bounds should still receive the native fire effect.
+blade.GetSkinnedAsset = function() error("bounds unavailable") end
+chord(8)
+advance(1.0)
+local fallback = effects[#effects]
+assert(fallback.parent == blade and fallback.asset:find("NS_Common_WeaponBurn_001", 1, true))
+assert(fallback.offset.X == 0 and fallback.offset.Y == 0 and fallback.offset.Z == 0)
